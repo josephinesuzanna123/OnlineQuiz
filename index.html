@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Online Quiz Practice System</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+  font-family: Arial, sans-serif;
+  background: #eef2ff;
+  color: #202943;
+}
+
+.container {
+  max-width: 750px;
+  margin: 25px auto;
+  background: white;
+  padding: 24px;
+  border-radius: 16px;
+  box-shadow: 0 5px 20px #00000012;
+}
+
+h1 {
+  color: #3049a5;
+  text-align: center;
+}
+
+.subtitle {
+  text-align: center;
+  color: #666;
+}
+
+.upload-box {
+  padding: 22px;
+  margin: 24px 0;
+  border: 2px dashed #8798d8;
+  border-radius: 12px;
+  text-align: center;
+  background: #f8f9ff;
+}
+
+input[type="file"] {
+  max-width: 100%;
+  margin: 15px 0;
+}
+
+button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #4058c8;
+  color: white;
+  cursor: pointer;
+  font-size: 15px;
+  margin: 5px 0;
+}
+
+button:hover {
+  background: #2e419e;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.full-button {
+  width: 100%;
+}
+
+.question {
+  border: 1px solid #e0e4f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 18px 0;
+}
+
+.question h3 {
+  line-height: 1.5;
+}
+
+.option {
+  display: block;
+  background: #f5f6fc;
+  padding: 13px;
+  border-radius: 8px;
+  margin: 9px 0;
+  cursor: pointer;
+}
+
+.option:hover {
+  background: #e8ecff;
+}
+
+.option input {
+  margin-right: 10px;
+}
+
+#status, #result {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.hidden {
+  display: none;
+}
+
+.correct {
+  color: #187743;
+}
+
+.wrong {
+  color: #c0392b;
+}
+
+.small {
+  color: #666;
+  font-size: 13px;
+}
+
+@media (max-width: 500px) {
+  body {
+    padding: 8px;
+  }
+
+  .container {
+    margin: 5px auto;
+    padding: 16px;
+  }
+
+  h1 {
+    font-size: 24px;
+  }
+
+  button {
+    min-height: 44px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<main class="container">
+
+  <h1>Online Quiz Practice</h1>
+
+  <p class="subtitle">
+    Upload your MCQ PDF and practise your questions!
+  </p>
+
+  <section class="upload-box" id="uploadArea">
+
+    <h2>Upload MCQ PDF</h2>
+
+    <p>
+      Choose a text-based PDF containing numbered questions,
+      options A-D, and an answer key.
+    </p>
+
+    <input
+      type="file"
+      id="pdfFile"
+      accept=".pdf,application/pdf"
+    >
+
+    <button
+      class="full-button"
+      id="loadBtn"
+      type="button"
+    >
+      Upload PDF and Create Quiz
+    </button>
+
+    <p id="status" role="status">
+      Please select your PDF file.
+    </p>
+
+    <p class="small">
+      Your PDF is processed in your browser.
+      Do not upload confidential documents.
+    </p>
+
+  </section>
+
+  <section id="quizArea" class="hidden">
+
+    <h2>Your Quiz</h2>
+
+    <p id="questionCount"></p>
+    <p id="timer"><strong>Time remaining: 10:00</strong></p>
+
+    <form id="quizForm">
+      <div id="questions"></div>
+
+      <button
+        class="full-button"
+        type="submit"
+        id="submitBtn"
+      >
+        Submit Quiz
+      </button>
+    </form>
+
+  </section>
+
+  <section id="result" aria-live="polite"></section>
+
+  <button
+    id="restartBtn"
+    class="full-button hidden"
+    type="button"
+  >
+    Upload Another PDF
+  </button>
+
+</main>
+
+<script>
+const pdfjs = window.pdfjsLib;
+
+if (pdfjs) {
+  pdfjs.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+
+let quizQuestions = [];
+let submitted = false;
+let timeLeft = 600;
+let timerId = null;
+
+const fileInput = document.getElementById("pdfFile");
+const loadBtn = document.getElementById("loadBtn");
+const statusBox = document.getElementById("status");
+const quizArea = document.getElementById("quizArea");
+const questionsBox = document.getElementById("questions");
+const resultBox = document.getElementById("result");
+const quizForm = document.getElementById("quizForm");
+const timerBox = document.getElementById("timer");
+const restartBtn = document.getElementById("restartBtn");
+
+// Read text from a PDF file.
+async function readPDF(file) {
+  if (!pdfjs) {
+    throw new Error(
+      "PDF library unavailable. Check your internet connection."
+    );
+  }
+
+  const buffer = await file.arrayBuffer();
+
+  const pdf = await pdfjs.getDocument({
+    data: new Uint8Array(buffer)
+  }).promise;
+
+  let allLines = [];
+
+  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+    const page = await pdf.getPage(pageNo);
+    const content = await page.getTextContent();
+
+    const rows = new Map();
+
+    content.items.forEach(item => {
+      if (!item.str || !item.str.trim()) return;
+
+      // Group text items on approximately the same horizontal line.
+      const y = Math.round(item.transform[5] / 3) * 3;
+
+      if (!rows.has(y)) rows.set(y, []);
+
+      rows.get(y).push({
+        x: item.transform[4],
+        text: item.str
+      });
+    });
+
+    const sortedRows = [...rows.keys()].sort((a, b) => b - a);
+
+    sortedRows.forEach(y => {
+      const parts = rows.get(y).sort((a, b) => a.x - b.x);
+
+      const line = parts
+        .map(part => part.text)
+        .join(" ")
+        .trim();
+
+      if (line) allLines.push(line);
+    });
+
+    allLines.push("");
+  }
+
+  return allLines;
+}
+
+// Convert PDF text into questions.
+function parseQuestions(lines) {
+  const questions = [];
+  let current = null;
+  let activeOption = null;
+
+  function saveQuestion() {
+    if (!current) return;
+
+    const hasAllOptions = ["A", "B", "C", "D"].every(
+      letter => current.options[letter]
+    );
+
+    if (
+      current.question.trim() &&
+      hasAllOptions &&
+      current.answer
+    ) {
+      questions.push(current);
+    }
+
+    current = null;
+    activeOption = null;
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    if (!line) continue;
+
+    // Example: 1. What is a queue?
+    // Also supports: Question 1: What is a queue?
+    const qMatch = line.match(
+      /^(?:(?:Question|Q)\s*)?(\d+)[.):]\s*(.*)$/i
+    );
+
+    if (qMatch) {
+      saveQuestion();
+
+      current = {
+        question: qMatch[2].trim(),
+        options: {},
+        answer: null
+      };
+
+      continue;
+    }
+
+    if (!current) continue;
+
+    // Example: Answer: B
+    const answerMatch = line.match(
+      /^(?:(?:correct\s+)?answer|ans)\s*[:.)-]?\s*([A-D])(?:\s|$|[.)])/i
+    );
+
+    if (answerMatch) {
+      current.answer = answerMatch[1].toUpperCase();
+      activeOption = null;
+      continue;
+    }
+
+    // Example: A) Stack
+    const optionMatch = line.match(
+      /^([A-D])\s*[).]\s*(.+)$/
+    );
+
+    if (optionMatch) {
+      activeOption = optionMatch[1].toUpperCase();
+      current.options[activeOption] = optionMatch[2].trim();
+      continue;
+    }
+
+    // Continue text that wraps onto another PDF line.
+    if (activeOption) {
+      current.options[activeOption] += " " + line;
+    } else {
+      current.question += " " + line;
+    }
+  }
+
+  saveQuestion();
+  return questions;
+}
+
+// Show questions using safe text elements.
+function displayQuiz() {
+  questionsBox.replaceChildren();
+  resultBox.replaceChildren();
+
+  quizQuestions.forEach((q, index) => {
+    const card = document.createElement("div");
+    card.className = "question";
+
+    const heading = document.createElement("h3");
+    heading.textContent = `${index + 1}. ${q.question}`;
+    card.appendChild(heading);
+
+    ["A", "B", "C", "D"].forEach(letter => {
+      const label = document.createElement("label");
+      label.className = "option";
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = `question${index}`;
+      radio.value = letter;
+
+      const optionText = document.createTextNode(
+        `${letter}) ${q.options[letter]}`
+      );
+
+      label.appendChild(radio);
+      label.appendChild(optionText);
+      card.appendChild(label);
+    });
+
+    questionsBox.appendChild(card);
+  });
+
+  document.getElementById("questionCount").textContent =
+    `Total questions: ${quizQuestions.length}`;
+
+  quizArea.classList.remove("hidden");
+}
+
+// Upload and process the PDF.
+loadBtn.addEventListener("click", async () => {
+  const file = fileInput.files[0];
+
+  if (!file) {
+    statusBox.textContent = "Please select a PDF file first.";
+    return;
+  }
+
+  if (
+    file.type !== "application/pdf" &&
+    !file.name.toLowerCase().endsWith(".pdf")
+  ) {
+    statusBox.textContent = "Please select a PDF file.";
+    return;
+  }
+
+  loadBtn.disabled = true;
+  statusBox.textContent = "Reading PDF. Please wait...";
+  quizArea.classList.add("hidden");
+  resultBox.replaceChildren();
+  restartBtn.classList.add("hidden");
+
+  clearInterval(timerId);
+  submitted = false;
+
+  try {
+    const lines = await readPDF(file);
+    const parsed = parseQuestions(lines);
+
+    if (parsed.length === 0) {
+      statusBox.textContent =
+        "No valid questions found. Check that your PDF has " +
+        "numbered questions, A-D options, and lines such as Answer: B.";
+      return;
+    }
+
+    quizQuestions = parsed;
+
+// Shuffle the question order.
+for (let i = quizQuestions.length - 1; i > 0; i--) {
+  const j = Math.floor(Math.random() * (i + 1));
+
+  [quizQuestions[i], quizQuestions[j]] =
+    [quizQuestions[j], quizQuestions[i]];
+}
+
+    statusBox.textContent =
+      `Successfully loaded ${quizQuestions.length} questions.`;
+
+    displayQuiz();
+
+    timeLeft = 600;
+    updateTimer();
+    timerId = setInterval(() => {
+      timeLeft--;
+      updateTimer();
+
+      if (timeLeft <= 0) {
+        finishQuiz(true);
+      }
+    }, 1000);
+
+    quizArea.scrollIntoView({ behavior: "smooth" });
+
+  } catch (error) {
+    console.error(error);
+
+    statusBox.textContent =
+      "Unable to read the PDF. Check your internet connection " +
+      "and try a text-based PDF.";
+  } finally {
+    loadBtn.disabled = false;
+  }
+});
+
+function updateTimer() {
+  const minutes = Math.floor(timeLeft / 60);
+  const seconds = timeLeft % 60;
+
+  timerBox.textContent =
+    `Time remaining: ${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+// Check answers and display the score.
+quizForm.addEventListener("submit", event => {
+  event.preventDefault();
+  finishQuiz(false);
+});
+
+function finishQuiz(timeExpired) {
+  if (submitted || quizQuestions.length === 0) return;
+
+  submitted = true;
+  clearInterval(timerId);
+
+  let score = 0;
+  let attempted = 0;
+
+  quizQuestions.forEach((q, index) => {
+    const chosen = document.querySelector(
+      `input[name="question${index}"]:checked`
+    );
+
+    const card = questionsBox.children[index];
+
+    if (chosen) {
+      attempted++;
+
+      if (chosen.value === q.answer) {
+        score++;
+      }
+    }
+
+    // Lock options after submission.
+    card.querySelectorAll("input").forEach(input => {
+      input.disabled = true;
+    });
+
+    const feedback = document.createElement("p");
+    const isCorrect = chosen && chosen.value === q.answer;
+
+    feedback.className = isCorrect ? "correct" : "wrong";
+
+    feedback.textContent = chosen
+      ? (isCorrect ? "Correct!" : "Incorrect.")
+      : "Not attempted.";
+
+    const answerInfo = document.createElement("p");
+    answerInfo.textContent =
+      `Correct answer: ${q.answer}) ${q.options[q.answer]}`;
+
+    card.appendChild(feedback);
+    card.appendChild(answerInfo);
+  });
+
+  const percentage = Math.round(
+    (score / quizQuestions.length) * 100
+  );
+
+  resultBox.replaceChildren();
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Quiz Results";
+
+  const scoreText = document.createElement("p");
+  scoreText.textContent =
+    `Your score: ${score} / ${quizQuestions.length}`;
+
+  const percentageText = document.createElement("p");
+  percentageText.textContent = `Percentage: ${percentage}%`;
+
+  const attemptedText = document.createElement("p");
+  attemptedText.textContent =
+    `Questions attempted: ${attempted} / ${quizQuestions.length}`;
+
+  const message = document.createElement("p");
+  message.textContent = timeExpired
+    ? "Time is up! Your quiz has been submitted."
+    : "Quiz submitted successfully!";
+
+  resultBox.append(
+    heading,
+    scoreText,
+    percentageText,
+    attemptedText,
+    message
+  );
+
+  document.getElementById("submitBtn").disabled = true;
+  restartBtn.classList.remove("hidden");
+
+  resultBox.scrollIntoView({ behavior: "smooth" });
+}
+
+// Reset the page to upload a different PDF.
+restartBtn.addEventListener("click", () => {
+  clearInterval(timerId);
+
+  quizQuestions = [];
+  submitted = false;
+  timeLeft = 600;
+
+  fileInput.value = "";
+  quizArea.classList.add("hidden");
+  restartBtn.classList.add("hidden");
+  resultBox.replaceChildren();
+
+  document.getElementById("submitBtn").disabled = false;
+  statusBox.textContent = "Please select another PDF file.";
+
+  document.getElementById("uploadArea")
+    .scrollIntoView({ behavior: "smooth" });
+});
+</script>
+
+</body>
+</html>
